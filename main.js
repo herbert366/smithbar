@@ -4,6 +4,10 @@ module.exports = class SmithBar extends Plugin {
     async onload() {
         console.log("SmithBar loaded.");
 
+        // Capture native title for parsing program info and as ultimate fallback
+        this.baseTitle = document.title || "";
+        this.programInfo = this.extractProgramInfo(this.baseTitle) || "Obsidian";
+
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new SmithBarSettingsTab(this.app, this));
 
@@ -15,7 +19,9 @@ module.exports = class SmithBar extends Plugin {
 
     onunload() {
         console.log("SmithBar unloaded.");
-        document.title = `Obsidian - ${this.app.vault.getName()}`;
+        document.title = this.baseTitle && this.baseTitle.trim()
+            ? this.baseTitle
+            : `Obsidian - ${this.app.vault.getName()}`;
         this.clearTabInjections();
     }
 
@@ -26,7 +32,7 @@ module.exports = class SmithBar extends Plugin {
     updateWindowTitle() {
         const file = this.app.workspace.getActiveFile();
 
-        const title = this.applyTemplate(this.settings.template, file);
+        const title = this.applyTemplate(this.settings.template || "", file);
         document.title = title;
 
         if (this.settings.injectIntoTabs) {
@@ -40,53 +46,67 @@ module.exports = class SmithBar extends Plugin {
         }
     }
 
-applyTemplate(template, file) {
-    const vault = this.app.vault.getName();
-
-    let fileName = "";
-    let path = "";
-    let foldersOrdered = []; // root -> deepest
-
-    if (file) {
-        path = file.path.replace(/\.md$/, "");
-        const parts = path.split("/");
-        fileName = file.basename;
-        foldersOrdered = parts.slice(0, -1); 
+    // Pull "Obsidian vX.Y.Z" (or similar) from the native title
+    extractProgramInfo(title) {
+        if (!title) return "";
+        // common native formats:
+        // "<Note> - <Vault> - Obsidian v1.9.14"
+        // "<Vault> - Obsidian v1.9.14"
+        const m = title.match(/Obsidian(?:\s+v[\d.]+)?/i);
+        return m ? m[0] : "";
     }
 
-    const folderTokens = (template.match(/{{folder}}/g) || []).length;
+    applyTemplate(template, file) {
+        const vault = this.app.vault.getName();
 
-    const fLen = foldersOrdered.length;
-    let seenFolder = 0;
+        let fileName = "";
+        let path = "";
+        let foldersOrdered = []; // root -> deepest
 
-    const tokens = template.split(/({{[^}]+}})/g);
-    let result = "";
-
-    tokens.forEach(token => {
-        if (token === "{{file}}") {
-            result += fileName;
-        } else if (token === "{{vault}}") {
-            result += vault;
-        } else if (token === "{{path}}") {
-            result += path;
-        } else if (token === "{{folder}}") {
-            const idx = fLen - folderTokens + seenFolder; // can be < 0 if user asked more than exists
-            result += (idx >= 0 && idx < fLen) ? foldersOrdered[idx] : "";
-            seenFolder += 1;
-        } else {
-            result += token;
+        if (file) {
+            path = file.path.replace(/\.md$/, "");
+            const parts = path.split("/");
+            fileName = file.basename;
+            foldersOrdered = parts.slice(0, -1);
         }
-    });
 
-    if (!result.trim()) result = `${vault} - Obsidian`;
+        const folderTokens = (template.match(/{{folder}}/g) || []).length;
+        const fLen = foldersOrdered.length;
+        let seenFolder = 0;
 
-    // Cleanup separators
-    return result
-        .replace(/\/+/g, "/")              
-        .replace(/\/(\s*[-–—]\s*)/g, "$1") 
-        .replace(/\/+$/g, "");             
-}
+        const tokens = template.split(/({{[^}]+}})/g);
+        let result = "";
 
+        tokens.forEach(token => {
+            if (token === "{{file}}") {
+                result += fileName;
+            } else if (token === "{{vault}}") {
+                result += vault;
+            } else if (token === "{{path}}") {
+                result += path;
+            } else if (token === "{{folder}}") {
+                // map k-th {{folder}} to foldersOrdered[F - N + k]
+                const idx = fLen - folderTokens + seenFolder;
+                result += (idx >= 0 && idx < fLen) ? foldersOrdered[idx] : "";
+                seenFolder += 1;
+            } else {
+                result += token;
+            }
+        });
+
+        // Robust fallback: if no template or empty render, keep maximum granularity
+        if (!template.trim() || !result.trim()) {
+            const left = path || fileName || "Untitled";
+            const programInfo = this.programInfo || "Obsidian";
+            return `${left} - ${vault} - ${programInfo}`;
+        }
+
+        // Cleanup separators
+        return result
+            .replace(/\/+/g, "/")               // collapse multiple slashes
+            .replace(/\/(\s*[-–—]\s*)/g, "$1")  
+            .replace(/\/+$/g, "");              
+    }
 
     updateTabInjections(file) {
         const leaves = this.app.workspace.getLeavesOfType("markdown");
@@ -95,12 +115,15 @@ applyTemplate(template, file) {
 
             const tabFile = leaf.view.file;
 
-            // Clean old
+            // Remove previous injection
             const oldSpan = leaf.tabHeaderEl.querySelector(".smithbar-tab-injection");
             if (oldSpan) oldSpan.remove();
 
             let tabText;
-            if (this.settings.showFolderInTabs) {
+            if (!this.settings.template.trim()) {
+                // if template is empty, keep native tab (basename only)
+                tabText = tabFile.basename;
+            } else if (this.settings.showFolderInTabs) {
                 tabText = this.applyTemplate(this.settings.template, tabFile);
             } else {
                 tabText = tabFile.basename;
@@ -148,7 +171,7 @@ class SmithBarSettingsTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("Window title template")
-            .setDesc("Placeholders: {{file}}, {{folder}}, {{vault}}, {{path}}. Multiple {{folder}} consume folders from deepest to root.")
+            .setDesc("Placeholders: {{file}}, {{folder}}, {{vault}}, {{path}}. Repeat {{folder}} to expand up the hierarchy (keeps original order).")
             .addTextArea(text => {
                 text
                     .setValue(this.plugin.settings.template)
@@ -197,7 +220,14 @@ class SmithBarSettingsTab extends PluginSettingTab {
 
     updatePreview(file) {
         if (!this.previewEl) return;
-        let example = this.plugin.applyTemplate(this.plugin.settings.template, file);
-        this.previewEl.setText("Preview: " + (example || "(empty)"));
+
+        const template = (this.plugin.settings.template || "");
+        const rendered = this.plugin.applyTemplate(template, file || null);
+
+        if (!template.trim()) {
+            this.previewEl.setText("Preview: (no template set, using Obsidian default) → " + rendered);
+        } else {
+            this.previewEl.setText("Preview: " + rendered);
+        }
     }
 }
