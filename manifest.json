@@ -1,0 +1,10 @@
+{
+  "id": "smithbar",
+  "name": "SmithBar",
+  "version": "1.4.2",
+  "minAppVersion": "1.0.0",
+  "description": "Forge your own Obsidian title bar with templates and optional tab label injection.",
+  "author": "herbert",
+  "isDesktopOnly": true,
+  "icon": "anvil"
+}
