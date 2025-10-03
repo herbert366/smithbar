@@ -57,56 +57,86 @@ module.exports = class SmithBar extends Plugin {
     }
 
     applyTemplate(template, file) {
-        const vault = this.app.vault.getName();
+    const vault = this.app.vault.getName();
 
-        let fileName = "";
-        let path = "";
-        let foldersOrdered = []; // root -> deepest
+    let fileName = "";
+    let path = "";
+    let foldersOrdered = []; // root -> deepest
 
-        if (file) {
-            path = file.path.replace(/\.md$/, "");
-            const parts = path.split("/");
-            fileName = file.basename;
-            foldersOrdered = parts.slice(0, -1);
-        }
-
-        const folderTokens = (template.match(/{{folder}}/g) || []).length;
-        const fLen = foldersOrdered.length;
-        let seenFolder = 0;
-
-        const tokens = template.split(/({{[^}]+}})/g);
-        let result = "";
-
-        tokens.forEach(token => {
-            if (token === "{{file}}") {
-                result += fileName;
-            } else if (token === "{{vault}}") {
-                result += vault;
-            } else if (token === "{{path}}") {
-                result += path;
-            } else if (token === "{{folder}}") {
-                // map k-th {{folder}} to foldersOrdered[F - N + k]
-                const idx = fLen - folderTokens + seenFolder;
-                result += (idx >= 0 && idx < fLen) ? foldersOrdered[idx] : "";
-                seenFolder += 1;
-            } else {
-                result += token;
-            }
-        });
-
-        // Robust fallback: if no template or empty render, keep maximum granularity
-        if (!template.trim() || !result.trim()) {
-            const left = path || fileName || "Untitled";
-            const programInfo = this.programInfo || "Obsidian";
-            return `${left} - ${vault} - ${programInfo}`;
-        }
-
-        // Cleanup separators
-        return result
-            .replace(/\/+/g, "/")               // collapse multiple slashes
-            .replace(/\/(\s*[-–—]\s*)/g, "$1")  
-            .replace(/\/+$/g, "");              
+    if (file) {
+        path = file.path.replace(/\.md$/, "");
+        const parts = path.split("/");
+        fileName = file.basename;
+        foldersOrdered = parts.slice(0, -1);
     }
+
+        template = template
+        .replace(/({{file}})+/g, "{{file}}")
+        .replace(/({{vault}})+/g, "{{vault}}")
+        .replace(/({{path}})+/g, "{{path}}")
+        .replace(/({{app}})+/g, "{{app}}")
+        .replace(/({{version}})+/g, "{{version}}")
+        .replace(/({{app:none}})+/g, "{{app:none}}");
+
+    // map repeated {{folder}} to the last N folders in-order
+    const folderTokens = (template.match(/{{folder}}/g) || []).length;
+    const fLen = foldersOrdered.length;
+    let seenFolder = 0;
+
+    // app/version control flags
+    let sawApp = false;       // {{app}}
+    let sawVersion = false;   // {{version}}
+    let sawAppNone = false;   // {{app:none}}
+
+    const tokens = template.split(/({{[^}]+}})/g);
+    let result = "";
+
+    tokens.forEach(token => {
+        if (token === "{{file}}") {
+            result += fileName;
+        } else if (token === "{{vault}}") {
+            result += vault;
+        } else if (token === "{{path}}") {
+            result += path;
+        } else if (token === "{{folder}}") {
+            const idx = fLen - folderTokens + seenFolder; // F - N + k
+            result += (idx >= 0 && idx < fLen) ? foldersOrdered[idx] : "";
+            seenFolder += 1;
+        } else if (token === "{{app}}") {
+            sawApp = true;
+            result += "Obsidian";
+        } else if (token === "{{version}}") {
+            sawVersion = true;
+            const verOnly = (this.programInfo && (this.programInfo.match(/v[\d.]+/i) || [])[0]) || "";
+            result += verOnly;
+        } else if (token === "{{app:none}}") {
+            sawAppNone = true; 
+       
+        } else {
+            result += token;
+        }
+    });
+
+    if (!template.trim() || !result.trim()) {
+        const left = path || fileName || "Untitled";
+        const programInfo = this.programInfo || "Obsidian";
+        return `${left} - ${vault} - ${programInfo}`;
+    }
+
+    if (!sawAppNone && !sawApp && !sawVersion) {
+        const programInfo = this.programInfo || "Obsidian";
+        const trimmedEnd = result.replace(/\s+$/, "");
+        const endsWithSep = /[-–—|:]\s*$/.test(trimmedEnd);
+        result = endsWithSep ? (trimmedEnd + " " + programInfo) : (result + " - " + programInfo);
+    }
+
+    // Minimal cleanup:
+    return result
+        .replace(/\/+/g, "/")         
+        .replace(/\/+$/g, "");        
+}
+
+
 
     updateTabInjections(file) {
         const leaves = this.app.workspace.getLeavesOfType("markdown");
@@ -150,7 +180,7 @@ module.exports = class SmithBar extends Plugin {
 };
 
 const DEFAULT_SETTINGS = {
-    template: "{{folder}}/{{file}} - {{vault}}",
+    template: "{{path}}",
     injectIntoTabs: false,
     showFolderInTabs: true
 };
@@ -164,59 +194,82 @@ class SmithBarSettingsTab extends PluginSettingTab {
     }
 
     display() {
-        let { containerEl } = this;
-        containerEl.empty();
+    let { containerEl } = this;
+    containerEl.empty();
 
-        containerEl.createEl("h2", { text: "SmithBar Settings" });
+    containerEl.createEl("h2", { text: "SmithBar Settings" });
 
-        new Setting(containerEl)
-            .setName("Window title template")
-            .setDesc("Placeholders: {{file}}, {{folder}}, {{vault}}, {{path}}. Repeat {{folder}} to expand up the hierarchy (keeps original order).")
-            .addTextArea(text => {
-                text
-                    .setValue(this.plugin.settings.template)
-                    .onChange(async value => {
-                        this.plugin.settings.template = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.updateWindowTitle();
-                    });
-                text.inputEl.style.width = "100%";
-                text.inputEl.style.height = "60px";
-            });
+    // --- Section: Placeholders reference ---
+    containerEl.createEl("h3", { text: "Available placeholders" });
 
-        this.previewEl = containerEl.createEl("div", { cls: "smithbar-preview" });
-        this.previewEl.style.marginTop = "8px";
-        this.previewEl.style.fontFamily = "monospace";
-        this.previewEl.style.opacity = "0.8";
+    const refList = containerEl.createEl("ul");
+    refList.style.fontFamily = "monospace";
+    refList.style.lineHeight = "1.6em";
 
-        new Setting(containerEl)
-            .setName("Inject into tab labels")
-            .setDesc("If enabled, apply the template also to tab headers (UI).")
-            .addToggle(toggle => {
-                toggle
-                    .setValue(this.plugin.settings.injectIntoTabs)
-                    .onChange(async value => {
-                        this.plugin.settings.injectIntoTabs = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.updateWindowTitle();
-                    });
-            });
+    [
+        "{{file}} → current note name",
+        "{{folder}} → parent folders (repeat to go up the hierarchy)",
+        "{{vault}} → vault name",
+        "{{path}} → full relative path",
+        "{{app}} → Obsidian (app name)",
+        "{{version}} → Obsidian version only",
+        "{{app:none}} → disable automatic Obsidian/version suffix"
+    ].forEach(item => {
+        refList.createEl("li", { text: item });
+    });
 
-        new Setting(containerEl)
-            .setName("Show folder in tab labels")
-            .setDesc("If disabled, only the file name will be shown in tabs.")
-            .addToggle(toggle => {
-                toggle
-                    .setValue(this.plugin.settings.showFolderInTabs)
-                    .onChange(async value => {
-                        this.plugin.settings.showFolderInTabs = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.updateWindowTitle();
-                    });
-            });
+    // --- Section: Template input ---
+    new Setting(containerEl)
+        .setName("Window title template")
+        .setDesc("Define how the window/tab title will be built using placeholders above.")
+        .addTextArea(text => {
+            text
+                .setValue(this.plugin.settings.template)
+                .onChange(async value => {
+                    this.plugin.settings.template = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateWindowTitle();
+                });
+            text.inputEl.style.width = "100%";
+            text.inputEl.style.height = "100px";
+            text.inputEl.style.fontFamily = "monospace";
+        });
 
-        this.plugin.updateWindowTitle();
-    }
+    this.previewEl = containerEl.createEl("div", { cls: "smithbar-preview" });
+    this.previewEl.style.marginTop = "8px";
+    this.previewEl.style.fontFamily = "monospace";
+    this.previewEl.style.opacity = "0.8";
+
+    // --- Toggles ---
+    new Setting(containerEl)
+        .setName("Inject into tab labels")
+        .setDesc("If enabled, apply the template also to tab headers (UI).")
+        .addToggle(toggle => {
+            toggle
+                .setValue(this.plugin.settings.injectIntoTabs)
+                .onChange(async value => {
+                    this.plugin.settings.injectIntoTabs = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateWindowTitle();
+                });
+        });
+
+    new Setting(containerEl)
+        .setName("Show folder in tab labels")
+        .setDesc("If disabled, only the file name will be shown in tabs.")
+        .addToggle(toggle => {
+            toggle
+                .setValue(this.plugin.settings.showFolderInTabs)
+                .onChange(async value => {
+                    this.plugin.settings.showFolderInTabs = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateWindowTitle();
+                });
+        });
+
+    this.plugin.updateWindowTitle();
+}
+
 
     updatePreview(file) {
         if (!this.previewEl) return;
