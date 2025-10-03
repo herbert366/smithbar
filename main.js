@@ -226,9 +226,21 @@ class SmithBarSettingsTab extends PluginSettingTab {
             text
                 .setValue(this.plugin.settings.template)
                 .onChange(async value => {
+                    // sanitize non-repeatable placeholders before saving
+                    value = value
+                        .replace(/({{file}})+/g, "{{file}}")
+                        .replace(/({{vault}})+/g, "{{vault}}")
+                        .replace(/({{path}})+/g, "{{path}}")
+                        .replace(/({{app}})+/g, "{{app}}")
+                        .replace(/({{version}})+/g, "{{version}}")
+                        .replace(/({{app:none}})+/g, "{{app:none}}");
+
                     this.plugin.settings.template = value;
                     await this.plugin.saveSettings();
                     this.plugin.updateWindowTitle();
+
+                    // force text area to reflect sanitized template
+                    text.setValue(value);
                 });
             text.inputEl.style.width = "100%";
             text.inputEl.style.height = "100px";
