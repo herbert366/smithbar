@@ -1,11 +1,11 @@
 const { Plugin, PluginSettingTab, Setting } = require('obsidian');
 
-module.exports = class CustomWindowTitle extends Plugin {
+module.exports = class SmithBar extends Plugin {
     async onload() {
-        console.log("Custom Window Title plugin loaded.");
+        console.log("SmithBar loaded.");
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-        this.addSettingTab(new TitleSettingsTab(this.app, this));
+        this.addSettingTab(new SmithBarSettingsTab(this.app, this));
 
         this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.updateWindowTitle()));
         this.registerEvent(this.app.workspace.on("file-open", () => this.updateWindowTitle()));
@@ -14,7 +14,7 @@ module.exports = class CustomWindowTitle extends Plugin {
     }
 
     onunload() {
-        console.log("Custom Window Title plugin unloaded.");
+        console.log("SmithBar unloaded.");
         document.title = `Obsidian - ${this.app.vault.getName()}`;
         this.clearTabInjections();
     }
@@ -25,70 +25,89 @@ module.exports = class CustomWindowTitle extends Plugin {
 
     updateWindowTitle() {
         const file = this.app.workspace.getActiveFile();
-        const vault = this.app.vault.getName();
 
-        const vars = {
-            vault: vault,
-            file: file ? file.basename : "",
-            folder: file && file.parent ? file.parent.name : "",
-            path: file ? file.path.replace(/\.md$/, "") : ""
-        };
-
-        // Apply template to window title
-        let title = this.applyTemplate(this.settings.template, vars);
-        if (!title.trim()) title = `${vault} - Obsidian`;
+        const title = this.applyTemplate(this.settings.template, file);
         document.title = title;
 
-        // Optionally update tab UI
         if (this.settings.injectIntoTabs) {
-            this.updateTabInjections(vars);
+            this.updateTabInjections(file);
         } else {
             this.clearTabInjections();
         }
 
-        // Update preview in settings if visible
         if (this.settingsTab) {
-            this.settingsTab.updatePreview(vars);
+            this.settingsTab.updatePreview(file);
         }
     }
 
-    applyTemplate(template, vars) {
-        let result = template;
-        Object.keys(vars).forEach(key => {
-            let regex = new RegExp(`{{${key}}}`, "g");
-            result = result.replace(regex, vars[key]);
-        });
-        return result;
+applyTemplate(template, file) {
+    const vault = this.app.vault.getName();
+
+    let fileName = "";
+    let path = "";
+    let foldersOrdered = []; // root -> deepest
+
+    if (file) {
+        path = file.path.replace(/\.md$/, "");
+        const parts = path.split("/");
+        fileName = file.basename;
+        foldersOrdered = parts.slice(0, -1); 
     }
 
-    updateTabInjections(vars) {
+    const folderTokens = (template.match(/{{folder}}/g) || []).length;
+
+    const fLen = foldersOrdered.length;
+    let seenFolder = 0;
+
+    const tokens = template.split(/({{[^}]+}})/g);
+    let result = "";
+
+    tokens.forEach(token => {
+        if (token === "{{file}}") {
+            result += fileName;
+        } else if (token === "{{vault}}") {
+            result += vault;
+        } else if (token === "{{path}}") {
+            result += path;
+        } else if (token === "{{folder}}") {
+            const idx = fLen - folderTokens + seenFolder; // can be < 0 if user asked more than exists
+            result += (idx >= 0 && idx < fLen) ? foldersOrdered[idx] : "";
+            seenFolder += 1;
+        } else {
+            result += token;
+        }
+    });
+
+    if (!result.trim()) result = `${vault} - Obsidian`;
+
+    // Cleanup separators
+    return result
+        .replace(/\/+/g, "/")              
+        .replace(/\/(\s*[-–—]\s*)/g, "$1") 
+        .replace(/\/+$/g, "");             
+}
+
+
+    updateTabInjections(file) {
         const leaves = this.app.workspace.getLeavesOfType("markdown");
         leaves.forEach(leaf => {
             if (!leaf.view || !leaf.view.file || !leaf.tabHeaderEl) return;
 
-            const file = leaf.view.file;
-            const varsForTab = {
-                vault: vars.vault,
-                file: file.basename,
-                folder: file.parent ? file.parent.name : "",
-                path: file.path.replace(/\.md$/, "")
-            };
+            const tabFile = leaf.view.file;
 
-            // Clean previous injection
-            const oldSpan = leaf.tabHeaderEl.querySelector(".cwt-tab-injection");
+            // Clean old
+            const oldSpan = leaf.tabHeaderEl.querySelector(".smithbar-tab-injection");
             if (oldSpan) oldSpan.remove();
 
-            // Decide injection content
             let tabText;
             if (this.settings.showFolderInTabs) {
-                tabText = this.applyTemplate(this.settings.template, varsForTab);
+                tabText = this.applyTemplate(this.settings.template, tabFile);
             } else {
-                tabText = varsForTab.file;
+                tabText = tabFile.basename;
             }
 
-            // Inject into tab
             const span = document.createElement("span");
-            span.className = "cwt-tab-injection";
+            span.className = "smithbar-tab-injection";
             span.style.marginLeft = "4px";
             span.style.opacity = "0.7";
             span.innerText = tabText;
@@ -101,7 +120,7 @@ module.exports = class CustomWindowTitle extends Plugin {
         const leaves = this.app.workspace.getLeavesOfType("markdown");
         leaves.forEach(leaf => {
             if (!leaf.tabHeaderEl) return;
-            const oldSpan = leaf.tabHeaderEl.querySelector(".cwt-tab-injection");
+            const oldSpan = leaf.tabHeaderEl.querySelector(".smithbar-tab-injection");
             if (oldSpan) oldSpan.remove();
         });
     }
@@ -113,23 +132,23 @@ const DEFAULT_SETTINGS = {
     showFolderInTabs: true
 };
 
-class TitleSettingsTab extends PluginSettingTab {
+class SmithBarSettingsTab extends PluginSettingTab {
     constructor(app, plugin) {
         super(app, plugin);
         this.plugin = plugin;
         this.previewEl = null;
-        this.plugin.settingsTab = this; // reference back to update preview
+        this.plugin.settingsTab = this;
     }
 
     display() {
         let { containerEl } = this;
         containerEl.empty();
 
-        containerEl.createEl("h2", { text: "Custom Window Title" });
+        containerEl.createEl("h2", { text: "SmithBar Settings" });
 
         new Setting(containerEl)
             .setName("Window title template")
-            .setDesc("Use placeholders: {{file}}, {{folder}}, {{vault}}, {{path}}")
+            .setDesc("Placeholders: {{file}}, {{folder}}, {{vault}}, {{path}}. Multiple {{folder}} consume folders from deepest to root.")
             .addTextArea(text => {
                 text
                     .setValue(this.plugin.settings.template)
@@ -142,15 +161,14 @@ class TitleSettingsTab extends PluginSettingTab {
                 text.inputEl.style.height = "60px";
             });
 
-        // Live preview element
-        this.previewEl = containerEl.createEl("div", { cls: "cwt-preview" });
+        this.previewEl = containerEl.createEl("div", { cls: "smithbar-preview" });
         this.previewEl.style.marginTop = "8px";
         this.previewEl.style.fontFamily = "monospace";
         this.previewEl.style.opacity = "0.8";
 
         new Setting(containerEl)
             .setName("Inject into tab labels")
-            .setDesc("If enabled, apply the pattern also to tab headers (UI).")
+            .setDesc("If enabled, apply the template also to tab headers (UI).")
             .addToggle(toggle => {
                 toggle
                     .setValue(this.plugin.settings.injectIntoTabs)
@@ -174,13 +192,12 @@ class TitleSettingsTab extends PluginSettingTab {
                     });
             });
 
-        // Initialize preview once
         this.plugin.updateWindowTitle();
     }
 
-    updatePreview(vars) {
+    updatePreview(file) {
         if (!this.previewEl) return;
-        let example = this.plugin.applyTemplate(this.plugin.settings.template, vars);
+        let example = this.plugin.applyTemplate(this.plugin.settings.template, file);
         this.previewEl.setText("Preview: " + (example || "(empty)"));
     }
 }
